@@ -1,0 +1,48 @@
+nano requirements.txt
+```
+
+Paste this content:
+```
+# Core
+python-chess>=1.10.0
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# Computer Vision
+opencv-python>=4.8.0
+opencv-contrib-python>=4.8.0
+
+# Machine Learning
+torch>=2.0.0
+torchvision>=0.15.0
+onnxruntime>=1.15.0
+scikit-learn>=1.3.0
+
+# Web UI
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+python-multipart>=0.0.6
+jinja2>=3.1.0
+websockets>=11.0
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+click>=8.1.0
+tqdm>=4.65.0
+requests>=2.31.0
+
+# Development
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.21.0
+black>=23.0.0
+ruff>=0.0.280
+mypy>=1.4.0
+pre-commit>=3.3.0
+
+# Jupyter (optional, for notebooks)
+jupyter>=1.0.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
