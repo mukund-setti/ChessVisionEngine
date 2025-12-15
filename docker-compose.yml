@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  chess-vision:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/app/models:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - STOCKFISH_PATH=/usr/local/bin/stockfish
+      - ENGINE_DEPTH=20
+      - ENGINE_THREADS=4
+      - LOG_LEVEL=INFO
+      - DEBUG=false
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Development service with hot reload
+  chess-vision-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8080"
+    volumes:
+      - .:/app
+      - ./models:/app/models
+    environment:
+      - STOCKFISH_PATH=/usr/local/bin/stockfish
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    command: python -m uvicorn src.ui.app:app --host 0.0.0.0 --port 8080 --reload
+    profiles:
+      - dev
