@@ -114,4 +114,4 @@ class PositionValidator:
                     "Try switching which side is to move"
                 )
 
-        return suggestion
+        return suggestions
