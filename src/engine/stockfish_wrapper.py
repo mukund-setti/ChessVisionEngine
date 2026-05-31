@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+from shutil import which
 
 import chess
 import chess.engine
@@ -42,10 +43,31 @@ class StockfishWrapper:
         threads: int | None = None,
         hash_mb: int | None = None,
     ):
-        self.stockfish_path = Path(stockfish_path or settings.stockfish_path)
+        self.stockfish_path = self._resolve_stockfish_path(stockfish_path)
         self.threads = threads or settings.engine_threads
         self.hash_mb = hash_mb or settings.engine_hash_mb
         self.engine: chess.engine.SimpleEngine | None = None
+
+    @staticmethod
+    def _resolve_stockfish_path(stockfish_path: str | Path | None = None) -> Path:
+        """Resolve Stockfish from settings, local binaries, or PATH."""
+        candidates = [
+            Path(stockfish_path) if stockfish_path else None,
+            Path(settings.stockfish_path),
+            Path.cwd() / "stockfish.exe",
+            Path.cwd() / "stockfish",
+        ]
+
+        for candidate in candidates:
+            if candidate and candidate.exists():
+                return candidate
+
+        for name in ("stockfish", "stockfish.exe"):
+            found = which(name)
+            if found:
+                return Path(found)
+
+        return Path(stockfish_path or settings.stockfish_path)
 
     def _ensure_engine(self) -> chess.engine.SimpleEngine:
         """Ensure engine is running."""
@@ -64,12 +86,18 @@ class StockfishWrapper:
         logger.info(f"Starting Stockfish from {self.stockfish_path}")
 
         self.engine = chess.engine.SimpleEngine.popen_uci(str(self.stockfish_path))
-        self.engine.configure({
-            "Threads": self.threads,
-            "Hash": self.hash_mb,
-        })
+        self.engine.configure(
+            {
+                "Threads": self.threads,
+                "Hash": self.hash_mb,
+            }
+        )
 
-        logger.info(f"Stockfish started (threads={self.threads}, hash={self.hash_mb}MB)")
+        logger.info(
+            "Stockfish started (threads=%s, hash=%sMB)",
+            self.threads,
+            self.hash_mb,
+        )
 
     def close(self) -> None:
         """Close the engine."""
@@ -105,11 +133,12 @@ class StockfishWrapper:
 
         logger.info(f"Analyzing position (depth={depth}): {fen}")
 
+        last_info: dict | None = None
         with engine.analysis(board, limit, multipv=multipv) as analysis:
             for info in analysis:
-                pass
+                last_info = info
 
-        info = analysis.info
+        info = last_info or {}
 
         best_move = info.get("pv", [None])[0]
         pv = info.get("pv", [])
@@ -119,12 +148,16 @@ class StockfishWrapper:
             pov_score = score.relative
             if pov_score.is_mate():
                 mate_in = pov_score.mate()
-                score_str = f"Mate in {abs(mate_in)}" if mate_in > 0 else f"Mated in {abs(mate_in)}"
+                score_str = (
+                    f"Mate in {abs(mate_in)}"
+                    if mate_in > 0
+                    else f"Mated in {abs(mate_in)}"
+                )
                 score_cp = None
                 score_mate = mate_in
             else:
                 cp = pov_score.score()
-                score_str = f"{cp/100:+.2f}"
+                score_str = f"{cp / 100:+.2f}"
                 score_cp = cp
                 score_mate = None
         else:
@@ -132,15 +165,19 @@ class StockfishWrapper:
             score_cp = 0
             score_mate = None
 
+        pv_list = info.get("pv", [])
+        ponder_move = pv_list[1] if len(pv_list) > 1 else None
+        pv_uci = [m.uci() for m in pv if m is not None]
+
         return AnalysisResult(
             fen=fen,
             depth=info.get("depth", depth),
             best_move=best_move.uci() if best_move else "",
-            ponder=info.get("pv", [None, None])[1].uci() if len(info.get("pv", [])) > 1 else None,
+            ponder=ponder_move.uci() if ponder_move else None,
             score=score_str,
             score_cp=score_cp,
             score_mate=score_mate,
-            pv=[m.uci() for m in pv],
+            pv=pv_uci,
             nodes=info.get("nodes", 0),
             time_ms=int(info.get("time", 0) * 1000),
         )
@@ -190,7 +227,7 @@ class StockfishWrapper:
                         if pov_score.is_mate():
                             eval_str = f"M{pov_score.mate()}"
                         else:
-                            eval_str = f"{pov_score.score()/100:+.2f}"
+                            eval_str = f"{pov_score.score() / 100:+.2f}"
 
                         idx = info["multipv"] - 1
                         while len(results) <= idx:

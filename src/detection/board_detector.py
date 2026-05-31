@@ -1,14 +1,14 @@
 """Board detection from images using computer vision."""
 
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from src.utils.logging_config import get_logger
 from src.utils.config import settings
+from src.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
@@ -52,12 +52,21 @@ class BoardDetector:
 
     def detect_board_from_array(self, image: NDArray[np.uint8]) -> DetectedBoard:
         """Detect chessboard from numpy array."""
-        if self.method == "hough":
-            corners = self._detect_with_hough(image)
-        elif self.method == "contour":
+        corners = self._detect_full_frame_board(image)
+
+        if corners is None:
+            if self.method == "hough":
+                corners = self._detect_with_hough(image)
+            elif self.method == "contour":
+                corners = self._detect_with_contours(image)
+            else:
+                raise ValueError(f"Unknown detection method: {self.method}")
+
+        if corners is None:
             corners = self._detect_with_contours(image)
-        else:
-            raise ValueError(f"Unknown detection method: {self.method}")
+
+        if corners is None:
+            corners = self._detect_board_fallback(image)
 
         if corners is None:
             raise ValueError("No chessboard detected in image")
@@ -72,7 +81,10 @@ class BoardDetector:
             confidence=0.9,
         )
 
-    def _detect_with_hough(self, image: NDArray[np.uint8]) -> NDArray[np.float32] | None:
+    def _detect_with_hough(
+        self,
+        image: NDArray[np.uint8],
+    ) -> NDArray[np.float32] | None:
         """Detect board using Hough line detection."""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -94,13 +106,20 @@ class BoardDetector:
         corners = self._find_corners_from_lines(lines, image.shape)
         return corners
 
-    def _detect_with_contours(self, image: NDArray[np.uint8]) -> NDArray[np.float32] | None:
+    def _detect_with_contours(
+        self,
+        image: NDArray[np.uint8],
+    ) -> NDArray[np.float32] | None:
         """Detect board using contour detection."""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
         _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(
+            thresh,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
 
         if not contours:
             logger.warning("No contours detected")
@@ -112,10 +131,75 @@ class BoardDetector:
 
             if len(approx) == 4:
                 area = cv2.contourArea(approx)
-                if self.min_size ** 2 <= area <= self.max_size ** 2:
+                if self.min_size**2 <= area <= self.max_size**2:
                     return self._order_corners(approx.reshape(4, 2))
 
         return None
+
+    def _detect_board_fallback(
+        self,
+        image: NDArray[np.uint8],
+    ) -> NDArray[np.float32] | None:
+        """Detect common board shapes when line/threshold methods are too strict."""
+        height, width = image.shape[:2]
+        min_dimension = min(height, width)
+
+        if min_dimension < self.min_size:
+            return None
+
+        full_frame = self._detect_full_frame_board(image)
+        if full_frame is not None:
+            return full_frame
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blur, 30, 100)
+        contours, _ = cv2.findContours(
+            edges,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+
+        image_area = height * width
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True):
+            area = cv2.contourArea(contour)
+            if area < image_area * 0.1:
+                continue
+
+            hull = cv2.convexHull(contour)
+            perimeter = cv2.arcLength(hull, True)
+            approx = cv2.approxPolyDP(hull, 0.04 * perimeter, True)
+
+            if len(approx) == 4:
+                return self._order_corners(approx.reshape(4, 2).astype(np.float32))
+
+        return None
+
+    def _detect_full_frame_board(
+        self,
+        image: NDArray[np.uint8],
+    ) -> NDArray[np.float32] | None:
+        """Treat square board screenshots as an already-cropped chessboard."""
+        height, width = image.shape[:2]
+        min_dimension = min(height, width)
+        if min_dimension < self.min_size:
+            return None
+
+        aspect = width / height
+        if not 0.9 <= aspect <= 1.1:
+            return None
+
+        return self._order_corners(
+            np.array(
+                [
+                    [0, 0],
+                    [width - 1, 0],
+                    [width - 1, height - 1],
+                    [0, height - 1],
+                ],
+                dtype=np.float32,
+            )
+        )
 
     def _find_corners_from_lines(
         self,
@@ -138,20 +222,23 @@ class BoardDetector:
         if len(horizontal) < 2 or len(vertical) < 2:
             return None
 
-        h_sorted = sorted(horizontal, key=lambda l: (l[1] + l[3]) / 2)
-        v_sorted = sorted(vertical, key=lambda l: (l[0] + l[2]) / 2)
+        h_sorted = sorted(horizontal, key=lambda line: (line[1] + line[3]) / 2)
+        v_sorted = sorted(vertical, key=lambda line: (line[0] + line[2]) / 2)
 
         top_line = h_sorted[0]
         bottom_line = h_sorted[-1]
         left_line = v_sorted[0]
         right_line = v_sorted[-1]
 
-        corners = np.array([
-            self._line_intersection(top_line, left_line),
-            self._line_intersection(top_line, right_line),
-            self._line_intersection(bottom_line, right_line),
-            self._line_intersection(bottom_line, left_line),
-        ], dtype=np.float32)
+        corners = np.array(
+            [
+                self._line_intersection(top_line, left_line),
+                self._line_intersection(top_line, right_line),
+                self._line_intersection(bottom_line, right_line),
+                self._line_intersection(bottom_line, left_line),
+            ],
+            dtype=np.float32,
+        )
 
         return corners
 
@@ -194,12 +281,15 @@ class BoardDetector:
         size: int = 800,
     ) -> NDArray[np.uint8]:
         """Warp board to square top-down view."""
-        dst = np.array([
-            [0, 0],
-            [size - 1, 0],
-            [size - 1, size - 1],
-            [0, size - 1],
-        ], dtype=np.float32)
+        dst = np.array(
+            [
+                [0, 0],
+                [size - 1, 0],
+                [size - 1, size - 1],
+                [0, size - 1],
+            ],
+            dtype=np.float32,
+        )
 
         matrix = cv2.getPerspectiveTransform(corners, dst)
         warped = cv2.warpPerspective(image, matrix, (size, size))
